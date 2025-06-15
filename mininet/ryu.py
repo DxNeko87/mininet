@@ -447,7 +447,7 @@ class MyTopologyApp(app_manager.RyuApp):
     @set_ev_cls(ofp_event.EventOFPSwitchFeatures, CONFIG_DISPATCHER)
     
     def switch_features_handler(self, ev):
-        self.logger.info("fjuwrfhewuifhwufiwrehferifjwifesajfdiewjfiewofdjewoifjweoifewjoifewjfewiofjew0ifewji0fewfewf")
+        self.logger.info("testing123")
         datapath = ev.msg.datapath
         ofproto = datapath.ofproto
         parser = datapath.ofproto_parser
