@@ -13,7 +13,7 @@ from ryu.lib.packet import arp, ether_types
 from ryu.lib import hub
 import heapq
 import time
-import threading
+import subprocess
 
 port_h1=1
 host_switch={
@@ -42,6 +42,8 @@ class MyTopologyApp(app_manager.RyuApp):
         self.old_path=[]
         self.monitor_thread = hub.spawn(self._monitor)
         self.ip_counter = 1
+        self.src_subflow_counter = 0
+        self.dst_subflow_counter = 0
         self.read_bandwidth_file("bw.txt")
 
         print("Please enter your source host number: ")
@@ -52,6 +54,25 @@ class MyTopologyApp(app_manager.RyuApp):
             self.port_h2=3
         elif self.dst_ip == 2:
             self.port_h2=4
+
+    def add_subflow_to_host(self, host_name, new_ip, interface):
+        """
+        host_name_ex:h1
+        new_ip_ex:10.0.0.1/24
+        interface_ex:h1-eth0:1
+        """
+        try:
+            with open("/tmp/%s.pid" % host_name, "r") as f:
+                pid = f.read().strip()
+
+            cmd_add_ip = "mnexec -a %s ifconfig %s %s up" % (pid, interface, new_ip)
+            subprocess.check_call(cmd_add_ip, shell=True)
+            print ("[INFO] 成功新增 IP %s 到 %s 的 %s" % (new_ip, host_name, interface))
+
+        except Exception as e:
+            print ("[ERROR] 無法新增 subflow: %s" % str(e))
+
+
 
     def _monitor(self):
         reset_interval = 1
@@ -348,6 +369,11 @@ class MyTopologyApp(app_manager.RyuApp):
             delta_tx_mb = delta_tx / (1024.0 * 1024.0)
             delta_rx_mb = delta_rx / (1024.0 * 1024.0)
 
+            if delta_rx_mb > 11 or delta_tx_mb > 11:
+                print ("[INFO] 流量暴增！DPID=%s port=%s delta=%d bytes" % (dpid, port_no, delta_tx_mb))
+                self.add_subflow_to_host("h1", "10.0.1.1/24", "h1-eth0:1")  #觸發新增 subflow
+                self.add_subflow_to_host("h2", "10.0.1.2/24", "h2-eth0:1")  #觸發新增 subflow
+
             if port_no < 99999:
                 neighbor = None
                 for n, p in self.adjacency.get(dpid, {}).items():
@@ -445,7 +471,6 @@ class MyTopologyApp(app_manager.RyuApp):
             self.find_max_bandwidth_path_recalculate(self.myswitches[host_switch[self.src_ip]], self.myswitches[host_switch[self.dst_ip]], temp_src_ip, temp_dst_ip)
 
     @set_ev_cls(ofp_event.EventOFPSwitchFeatures, CONFIG_DISPATCHER)
-    
     def switch_features_handler(self, ev):
         self.logger.info("testing123")
         datapath = ev.msg.datapath
