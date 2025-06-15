@@ -4,12 +4,12 @@ from os import link, remove
 from xml.sax.handler import property_dom_node
 from ryu.base import app_manager
 from ryu.controller import ofp_event
-from ryu.controller.handler import set_ev_cls, MAIN_DISPATCHER
+from ryu.controller.handler import set_ev_cls, MAIN_DISPATCHER, CONFIG_DISPATCHER
 from ryu.ofproto import ofproto_v1_3
 from ryu.lib.packet import packet, ethernet, arp
 from ryu.topology import event, switches
 from ryu.topology.api import get_switch, get_link, get_host
-from ryu.lib.packet import arp
+from ryu.lib.packet import arp, ether_types
 from ryu.lib import hub
 import heapq
 import time
@@ -103,16 +103,6 @@ class MyTopologyApp(app_manager.RyuApp):
         mod = parser.OFPFlowMod(datapath=datapath, match=match, instructions=inst)
         datapath.send_msg(mod)
 
-    def install_flow_arp(self, datapath, arp_tpa, in_port, out_port):
-        ofproto = datapath.ofproto
-        parser = datapath.ofproto_parser
-	
-        match = parser.OFPMatch(eth_type=0x0806,arp_tpa=arp_tpa ,in_port=in_port)   
-        actions = [parser.OFPActionOutput(out_port)]
-
-        inst = [parser.OFPInstructionActions(ofproto.OFPIT_APPLY_ACTIONS, actions)]
-        mod = parser.OFPFlowMod(datapath=datapath, match=match, instructions=inst)
-        datapath.send_msg(mod)
 
     def delete_all_flows(self, datapath):
         """
@@ -239,8 +229,6 @@ class MyTopologyApp(app_manager.RyuApp):
                 out_port = self.adjacency[current_switch][next_switch]
                 self.install_flow(self.datapath_list[current_switch], in_port, out_port, src_ip, dst_ip)
                 self.install_flow(self.datapath_list[current_switch], out_port, in_port, dst_ip, src_ip)
-                self.install_flow_arp(self.datapath_list[current_switch], dst_ip, in_port, out_port)
-                self.install_flow_arp(self.datapath_list[current_switch], src_ip, out_port, in_port)
                 print("Installed flow: Switch %d, in_port: %d -> out_port: %d" % (current_switch, in_port, out_port))
 
             elif i == len(path) - 1:
@@ -250,8 +238,6 @@ class MyTopologyApp(app_manager.RyuApp):
                 out_port = self.port_h2
                 self.install_flow(self.datapath_list[current_switch], in_port, out_port, src_ip, dst_ip)
                 self.install_flow(self.datapath_list[current_switch], out_port, in_port, dst_ip, src_ip)
-                self.install_flow_arp(self.datapath_list[current_switch], dst_ip, in_port, out_port)
-                self.install_flow_arp(self.datapath_list[current_switch], src_ip, out_port, in_port)
                 print("Installed flow: Switch %d, in_port: %d -> out_port: %d" % (current_switch, in_port, out_port))
 
             else:
@@ -262,8 +248,6 @@ class MyTopologyApp(app_manager.RyuApp):
                 out_port = self.adjacency[current_switch][next_switch]
                 self.install_flow(self.datapath_list[current_switch], in_port, out_port, src_ip, dst_ip)
                 self.install_flow(self.datapath_list[current_switch], out_port, in_port, dst_ip, src_ip)
-                self.install_flow_arp(self.datapath_list[current_switch], dst_ip, in_port, out_port)
-                self.install_flow_arp(self.datapath_list[current_switch], src_ip, out_port, in_port)
                 print("Installed flow: Switch %d, in_port: %d -> out_port: %d" % (current_switch, in_port, out_port))
 
         print("Largest bandwidth route:", " -> ".join(map(str, path)))
@@ -460,5 +444,25 @@ class MyTopologyApp(app_manager.RyuApp):
             temp_dst_ip = "10.0.%d.%d" % (self.ip_counter,self.dst_ip)
             self.find_max_bandwidth_path_recalculate(self.myswitches[host_switch[self.src_ip]], self.myswitches[host_switch[self.dst_ip]], temp_src_ip, temp_dst_ip)
 
+    @set_ev_cls(ofp_event.EventOFPSwitchFeatures, CONFIG_DISPATCHER)
+    
+    def switch_features_handler(self, ev):
+        self.logger.info("fjuwrfhewuifhwufiwrehferifjwifesajfdiewjfiewofdjewoifjweoifewjoifewjfewiofjew0ifewji0fewfewf")
+        datapath = ev.msg.datapath
+        ofproto = datapath.ofproto
+        parser = datapath.ofproto_parser
 
+        # 安裝 ARP 封包的 flow
+        match = parser.OFPMatch(eth_type=ether_types.ETH_TYPE_ARP)
+        actions = [parser.OFPActionOutput(ofproto.OFPP_FLOOD)]
+        inst = [parser.OFPInstructionActions(ofproto.OFPIT_APPLY_ACTIONS, actions)]
 
+        mod = parser.OFPFlowMod(
+            datapath=datapath,
+            priority=1,
+            match=match,
+            instructions=inst
+        )
+        datapath.send_msg(mod)
+
+        self.logger.info("Installed ARP flood flow on switch %s", datapath.id)
