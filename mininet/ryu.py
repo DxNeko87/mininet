@@ -124,6 +124,17 @@ class MyTopologyApp(app_manager.RyuApp):
         mod = parser.OFPFlowMod(datapath=datapath, match=match, instructions=inst)
         datapath.send_msg(mod)
 
+    def install_flow_arp(self, datapath, arp_tpa, in_port, out_port):
+        ofproto = datapath.ofproto
+        parser = datapath.ofproto_parser
+	
+        match = parser.OFPMatch(eth_type=0x0806,arp_tpa=arp_tpa ,in_port=in_port)   
+        actions = [parser.OFPActionOutput(out_port)]
+
+        inst = [parser.OFPInstructionActions(ofproto.OFPIT_APPLY_ACTIONS, actions)]
+        mod = parser.OFPFlowMod(datapath=datapath, match=match, instructions=inst)
+        datapath.send_msg(mod)
+
 
     def delete_all_flows(self, datapath):
         """
@@ -250,6 +261,8 @@ class MyTopologyApp(app_manager.RyuApp):
                 out_port = self.adjacency[current_switch][next_switch]
                 self.install_flow(self.datapath_list[current_switch], in_port, out_port, src_ip, dst_ip)
                 self.install_flow(self.datapath_list[current_switch], out_port, in_port, dst_ip, src_ip)
+                self.install_flow_arp(self.datapath_list[current_switch], dst_ip, in_port, out_port)
+                self.install_flow_arp(self.datapath_list[current_switch], src_ip, out_port, in_port)
                 print("Installed flow: Switch %d, in_port: %d -> out_port: %d" % (current_switch, in_port, out_port))
 
             elif i == len(path) - 1:
@@ -259,6 +272,8 @@ class MyTopologyApp(app_manager.RyuApp):
                 out_port = self.port_h2
                 self.install_flow(self.datapath_list[current_switch], in_port, out_port, src_ip, dst_ip)
                 self.install_flow(self.datapath_list[current_switch], out_port, in_port, dst_ip, src_ip)
+                self.install_flow_arp(self.datapath_list[current_switch], dst_ip, in_port, out_port)
+                self.install_flow_arp(self.datapath_list[current_switch], src_ip, out_port, in_port)
                 print("Installed flow: Switch %d, in_port: %d -> out_port: %d" % (current_switch, in_port, out_port))
 
             else:
@@ -269,6 +284,8 @@ class MyTopologyApp(app_manager.RyuApp):
                 out_port = self.adjacency[current_switch][next_switch]
                 self.install_flow(self.datapath_list[current_switch], in_port, out_port, src_ip, dst_ip)
                 self.install_flow(self.datapath_list[current_switch], out_port, in_port, dst_ip, src_ip)
+                self.install_flow_arp(self.datapath_list[current_switch], dst_ip, in_port, out_port)
+                self.install_flow_arp(self.datapath_list[current_switch], src_ip, out_port, in_port)
                 print("Installed flow: Switch %d, in_port: %d -> out_port: %d" % (current_switch, in_port, out_port))
 
         print("Largest bandwidth route:", " -> ".join(map(str, path)))
@@ -363,16 +380,17 @@ class MyTopologyApp(app_manager.RyuApp):
             prev_tx, prev_rx = self.port_stats.get((dpid, port_no), (tx_bytes, rx_bytes))
             delta_tx = tx_bytes - prev_tx
             delta_rx = rx_bytes - prev_rx
-
+            
             self.port_stats[(dpid, port_no)] = (tx_bytes, rx_bytes)
 
             delta_tx_mb = delta_tx / (1024.0 * 1024.0)
             delta_rx_mb = delta_rx / (1024.0 * 1024.0)
+            self.logger.info("SHOWING DELTA %s"%delta_rx_mb)
 
-            if delta_rx_mb > 11 or delta_tx_mb > 11:
-                print ("[INFO] 流量暴增！DPID=%s port=%s delta=%d bytes" % (dpid, port_no, delta_tx_mb))
-                self.add_subflow_to_host("h1", "10.0.1.1/24", "h1-eth0:1")  #觸發新增 subflow
-                self.add_subflow_to_host("h2", "10.0.1.2/24", "h2-eth0:1")  #觸發新增 subflow
+            if delta_rx_mb > 3 or delta_tx_mb > 3:
+                print ("[INFO] DPID=%s port=%s delta=%d bytes" % (dpid, port_no, delta_tx_mb))
+                #self.add_subflow_to_host("h1", "10.0.1.1/24", "h1-eth0:1")  #觸發新增 subflow
+                #self.add_subflow_to_host("h2", "10.0.1.2/24", "h2-eth0:1")  #觸發新增 subflow
 
             if port_no < 99999:
                 neighbor = None
@@ -469,25 +487,3 @@ class MyTopologyApp(app_manager.RyuApp):
             temp_src_ip = "10.0.%d.%d" % (self.ip_counter,self.src_ip)
             temp_dst_ip = "10.0.%d.%d" % (self.ip_counter,self.dst_ip)
             self.find_max_bandwidth_path_recalculate(self.myswitches[host_switch[self.src_ip]], self.myswitches[host_switch[self.dst_ip]], temp_src_ip, temp_dst_ip)
-
-    @set_ev_cls(ofp_event.EventOFPSwitchFeatures, CONFIG_DISPATCHER)
-    def switch_features_handler(self, ev):
-        self.logger.info("testing123")
-        datapath = ev.msg.datapath
-        ofproto = datapath.ofproto
-        parser = datapath.ofproto_parser
-
-        # 安裝 ARP 封包的 flow
-        match = parser.OFPMatch(eth_type=ether_types.ETH_TYPE_ARP)
-        actions = [parser.OFPActionOutput(ofproto.OFPP_FLOOD)]
-        inst = [parser.OFPInstructionActions(ofproto.OFPIT_APPLY_ACTIONS, actions)]
-
-        mod = parser.OFPFlowMod(
-            datapath=datapath,
-            priority=1,
-            match=match,
-            instructions=inst
-        )
-        datapath.send_msg(mod)
-
-        self.logger.info("Installed ARP flood flow on switch %s", datapath.id)
