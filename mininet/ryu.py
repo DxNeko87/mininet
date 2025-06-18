@@ -45,6 +45,8 @@ class MyTopologyApp(app_manager.RyuApp):
         self.src_subflow_counter = 0
         self.dst_subflow_counter = 0
         self.read_bandwidth_file("bw.txt")
+        self.subflow_counter = 1 
+        self.subflow_limit = 30
 
         print("Please enter your source host number: ")
         self.src_ip = int(input())
@@ -362,7 +364,7 @@ class MyTopologyApp(app_manager.RyuApp):
             self.link_inactive_since = {}
 
         body = ev.msg.body
-        THRESHOLD_MB = 1.0  # 門檻大小（MB）
+        THRESHOLD_MB = 20.0  # 門檻大小（MB）
 
         dpid = ev.msg.datapath.id
         need_recalculate = False
@@ -385,12 +387,15 @@ class MyTopologyApp(app_manager.RyuApp):
 
             delta_tx_mb = delta_tx / (1024.0 * 1024.0)
             delta_rx_mb = delta_rx / (1024.0 * 1024.0)
-            self.logger.info("SHOWING DELTA %s"%delta_rx_mb)
 
-            if delta_rx_mb > 3 or delta_tx_mb > 3:
+            if delta_rx_mb > self.subflow_limit or delta_tx_mb > self.subflow_limit:
                 print ("[INFO] DPID=%s port=%s delta=%d bytes" % (dpid, port_no, delta_tx_mb))
-                #self.add_subflow_to_host("h1", "10.0.1.1/24", "h1-eth0:1")  #觸發新增 subflow
-                #self.add_subflow_to_host("h2", "10.0.1.2/24", "h2-eth0:1")  #觸發新增 subflow
+                self.add_subflow_to_host("h1", "10.0.%s.1/24" % self.subflow_counter, "h1-eth0:%s" % self.subflow_counter)
+                self.add_subflow_to_host("h2", "10.0.%s.2/24" % self.subflow_counter, "h2-eth0:%s" % self.subflow_counter)
+                self.subflow_counter += 1
+                self.subflow_limit += (self.subflow_limit/2)
+                self.logger.info("[INFO] %s" % self.subflow_limit)
+
 
             if port_no < 99999:
                 neighbor = None
@@ -421,7 +426,7 @@ class MyTopologyApp(app_manager.RyuApp):
             #if max_tx > 1 or max_rx > 1:
                 #print(sw1,"TX:", round(max_tx, 2))
                 #print(sw2,"RX:", round(max_rx, 2))
-
+          
             if max_tx > THRESHOLD_MB or max_rx > THRESHOLD_MB:
                 # 流量過大，要刪除連結
                 if sw1 in self.adjacency and sw2 in self.adjacency[sw1]:
