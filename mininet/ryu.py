@@ -15,11 +15,11 @@ import heapq
 import time
 import subprocess
 
+port_h2=4
 port_h1=1
 host_switch={
     1:0,
     2:4,
-    3:3
 }
 
 
@@ -47,7 +47,11 @@ class MyTopologyApp(app_manager.RyuApp):
         self.read_bandwidth_file("bw.txt")
         self.subflow_counter = 1 
         self.subflow_limit = 30
+        self.arp_src ="10.0.0.0"
+        self.arp_dst ="10.0.0.0"
+        self.port_h2=4
 
+        """
         print("Please enter your source host number: ")
         self.src_ip = int(input())
         print("Please enter your destination host number: ")
@@ -56,7 +60,7 @@ class MyTopologyApp(app_manager.RyuApp):
             self.port_h2=3
         elif self.dst_ip == 2:
             self.port_h2=4
-
+        """
     def add_subflow_to_host(self, host_name, new_ip, interface):
         """
         host_name_ex:h1
@@ -332,15 +336,6 @@ class MyTopologyApp(app_manager.RyuApp):
             for s2 in self.adjacency[s1]:
                 print ("Switch %d -> Switch %d via Port %d" % (s1, s2, self.adjacency[s1][s2]))
 
-        if len(self.myswitches) > 1:
-            # First path for src_ip and dst_ip
-            tmp_src_ip = "10.0.0.%d" % self.src_ip
-            tmp_dst_ip = "10.0.0.%d" % self.dst_ip
-            self.find_max_bandwidth_path(self.myswitches[host_switch[self.src_ip]], 
-                                        self.myswitches[host_switch[self.dst_ip]],
-                                        tmp_src_ip, 
-                                        tmp_dst_ip)
-
         print("-------------------------")
         print(self.adjacency)
         print("-------------------------")
@@ -352,7 +347,51 @@ class MyTopologyApp(app_manager.RyuApp):
         parser = datapath.ofproto_parser
         req = parser.OFPPortStatsRequest(datapath, 0, ofproto_v1_3.OFPP_ANY)
         datapath.send_msg(req)
-    
+      
+    @set_ev_cls(ofp_event.EventOFPPacketIn, MAIN_DISPATCHER)
+    def packet_in_handler(self, ev):
+        msg = ev.msg
+        pkt = packet.Packet(msg.data)
+
+        eth = pkt.get_protocol(ethernet.ethernet)
+        if eth.ethertype != 0x0806:  # 0x0806 是 ARP 封包
+            return
+        self.logger.info(eth)
+        arp_pkt = pkt.get_protocol(arp.arp)
+        if arp_pkt:
+            self.arp_src = arp_pkt.src_ip
+            self.arp_dst = arp_pkt.dst_ip
+            print("ARP Packet - Src IP:", self.arp_src, "Dst IP:", self.arp_dst)
+        if len(self.myswitches) > 1:
+            # First path for src_ip and dst_ip
+            #tmp_src_ip = "10.0.0.%d" % self.src_ip
+            #tmp_dst_ip = "10.0.0.%d" % self.dst_ip
+            tmp_src_ip = self.arp_src
+            tmp_dst_ip = self.arp_dst
+            tmp_host_src = int(self.arp_src[-1])
+            tmp_host_dst = int(self.arp_dst[-1])
+            if tmp_host_src!=0 and tmp_host_dst!=0:
+	        self.find_max_bandwidth_path(self.myswitches[host_switch[tmp_host_src]], 
+		                            self.myswitches[host_switch[tmp_host_dst]],
+		                            tmp_src_ip, 
+		                            tmp_dst_ip)
+
+    @set_ev_cls(ofp_event.EventOFPSwitchFeatures, CONFIG_DISPATCHER)
+    def switch_features_handler(self, ev):
+        datapath = ev.msg.datapath
+        ofproto = datapath.ofproto
+        parser = datapath.ofproto_parser
+
+        # 讓所有 ARP 封包都送進 Controller
+        match = parser.OFPMatch(eth_type=0x0806)
+        actions = [parser.OFPActionOutput(ofproto.OFPP_CONTROLLER,
+                                       ofproto.OFPCML_NO_BUFFER)]
+        inst = [parser.OFPInstructionActions(ofproto.OFPIT_APPLY_ACTIONS,
+                                         actions)]
+        mod = parser.OFPFlowMod(datapath=datapath, priority=1,
+                            match=match, instructions=inst)
+        datapath.send_msg(mod)
+
     @set_ev_cls(ofp_event.EventOFPPortStatsReply, MAIN_DISPATCHER)
     def port_stats_reply_handler(self, ev):
         """
@@ -390,11 +429,11 @@ class MyTopologyApp(app_manager.RyuApp):
 
             if delta_rx_mb > self.subflow_limit or delta_tx_mb > self.subflow_limit:
                 print ("[INFO] DPID=%s port=%s delta=%d bytes" % (dpid, port_no, delta_tx_mb))
-                self.add_subflow_to_host("h1", "10.0.%s.1/24" % self.subflow_counter, "h1-eth0:%s" % self.subflow_counter)
-                self.add_subflow_to_host("h2", "10.0.%s.2/24" % self.subflow_counter, "h2-eth0:%s" % self.subflow_counter)
-                self.subflow_counter += 1
-                self.subflow_limit += (self.subflow_limit/2)
-                self.logger.info("[INFO] %s" % self.subflow_limit)
+                #self.add_subflow_to_host("h1", "10.0.%s.1/24" % self.subflow_counter, "h1-eth0:%s" % self.subflow_counter)
+                #self.add_subflow_to_host("h2", "10.0.%s.2/24" % self.subflow_counter, "h2-eth0:%s" % self.subflow_counter)
+                #self.subflow_counter += 1
+                #self.subflow_limit += (self.subflow_limit/2)
+                #self.logger.info("[INFO] %s" % self.subflow_limit)
 
 
             if port_no < 99999:
@@ -492,3 +531,5 @@ class MyTopologyApp(app_manager.RyuApp):
             temp_src_ip = "10.0.%d.%d" % (self.ip_counter,self.src_ip)
             temp_dst_ip = "10.0.%d.%d" % (self.ip_counter,self.dst_ip)
             self.find_max_bandwidth_path_recalculate(self.myswitches[host_switch[self.src_ip]], self.myswitches[host_switch[self.dst_ip]], temp_src_ip, temp_dst_ip)
+
+ 
