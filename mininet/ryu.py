@@ -49,7 +49,13 @@ class MyTopologyApp(app_manager.RyuApp):
         self.subflow_limit = 30
         self.arp_src ="10.0.0.0"
         self.arp_dst ="10.0.0.0"
+        self.flow_arp_dst ="10.0.0.2"
+        self.flow_ip_dst ="10.0.0.2"
         self.port_h2=4
+        self.src_ip=1
+        self.dst_ip=2
+        self.arp_flow_table={}
+        self.ip_flow_table={}
 
         """
         print("Please enter your source host number: ")
@@ -118,28 +124,54 @@ class MyTopologyApp(app_manager.RyuApp):
                         print ("Invalid line format in bw.txt:", line)
         except IOError:
             print ("Error: Could not read file", filename)
-
     def install_flow(self, datapath ,in_port, out_port, src_ip, dst_ip):
         ofproto = datapath.ofproto
         parser = datapath.ofproto_parser
 	
-        match = parser.OFPMatch(eth_type=0x0800, in_port=in_port, ipv4_src=src_ip, ipv4_dst=dst_ip)   
-        actions = [parser.OFPActionOutput(out_port)]
+        key = (datapath.id,in_port,dst_ip)
+
+        if not hasattr(self, 'ip_flow_table'):
+            self.ip_flow_table = {}
+
+        if key not in self.ip_flow_table:
+            self.ip_flow_table[key] = set()
+
+        if out_port in self.ip_flow_table[key]:
+            return 
+
+        match = parser.OFPMatch(eth_type=0x0800, in_port=in_port, ipv4_src=src_ip, ipv4_dst=dst_ip) 
+        self.ip_flow_table[key].add(out_port)  
+        actions = [parser.OFPActionOutput(p) for p in sorted(self.ip_flow_table[key])]
 
         inst = [parser.OFPInstructionActions(ofproto.OFPIT_APPLY_ACTIONS, actions)]
-        mod = parser.OFPFlowMod(datapath=datapath, match=match, instructions=inst)
+        mod = parser.OFPFlowMod(datapath=datapath, match=match, instructions=inst, command=ofproto.OFPFC_ADD)
         datapath.send_msg(mod)
 
     def install_flow_arp(self, datapath, arp_tpa, in_port, out_port):
         ofproto = datapath.ofproto
         parser = datapath.ofproto_parser
 	
-        match = parser.OFPMatch(eth_type=0x0806,arp_tpa=arp_tpa ,in_port=in_port)   
-        actions = [parser.OFPActionOutput(out_port)]
+        key = (datapath.id,in_port,arp_tpa)
+     
+        if not hasattr(self, 'arp_flow_table'):
+            self.arp_flow_table = {}
 
+        if key not in self.arp_flow_table:
+            self.arp_flow_table[key] = set()
+
+        if out_port in self.arp_flow_table[key]:
+            return       
+
+        self.arp_flow_table[key].add(out_port)
+        match = parser.OFPMatch(eth_type=0x0806,arp_tpa=arp_tpa ,in_port=in_port)   
+        actions = [parser.OFPActionOutput(p) for p in sorted(self.arp_flow_table[key])]
+        self.logger.info(match)
+        self.logger.info(">>>>>>>>>>>>>>>>>>>>>>>>>>>>>") 
         inst = [parser.OFPInstructionActions(ofproto.OFPIT_APPLY_ACTIONS, actions)]
-        mod = parser.OFPFlowMod(datapath=datapath, match=match, instructions=inst)
+        mod = parser.OFPFlowMod(datapath=datapath, match=match, instructions=inst, command=ofproto.OFPFC_ADD)
+        
         datapath.send_msg(mod)
+
 
 
     def delete_all_flows(self, datapath):
@@ -265,9 +297,9 @@ class MyTopologyApp(app_manager.RyuApp):
                 next_switch = path[i + 1]
                 in_port = port_h1
                 out_port = self.adjacency[current_switch][next_switch]
-                self.install_flow(self.datapath_list[current_switch], in_port, out_port, src_ip, dst_ip)
-                self.install_flow(self.datapath_list[current_switch], out_port, in_port, dst_ip, src_ip)
-                self.install_flow_arp(self.datapath_list[current_switch], dst_ip, in_port, out_port)
+                self.install_flow(self.datapath_list[current_switch], in_port, out_port, src_ip, self.flow_arp_dst)
+                self.install_flow(self.datapath_list[current_switch], out_port, in_port, self.flow_arp_dst, src_ip)
+                self.install_flow_arp(self.datapath_list[current_switch], self.flow_arp_dst, in_port, out_port)
                 self.install_flow_arp(self.datapath_list[current_switch], src_ip, out_port, in_port)
                 print("Installed flow: Switch %d, in_port: %d -> out_port: %d" % (current_switch, in_port, out_port))
 
@@ -276,9 +308,9 @@ class MyTopologyApp(app_manager.RyuApp):
                 prev_switch = path[i - 1]
                 in_port = self.adjacency[current_switch][prev_switch]
                 out_port = self.port_h2
-                self.install_flow(self.datapath_list[current_switch], in_port, out_port, src_ip, dst_ip)
-                self.install_flow(self.datapath_list[current_switch], out_port, in_port, dst_ip, src_ip)
-                self.install_flow_arp(self.datapath_list[current_switch], dst_ip, in_port, out_port)
+                self.install_flow(self.datapath_list[current_switch], in_port, out_port, src_ip, self.flow_arp_dst)
+                self.install_flow(self.datapath_list[current_switch], out_port, in_port, self.flow_arp_dst, src_ip)
+                self.install_flow_arp(self.datapath_list[current_switch], self.flow_arp_dst, in_port, out_port)
                 self.install_flow_arp(self.datapath_list[current_switch], src_ip, out_port, in_port)
                 print("Installed flow: Switch %d, in_port: %d -> out_port: %d" % (current_switch, in_port, out_port))
 
@@ -288,9 +320,9 @@ class MyTopologyApp(app_manager.RyuApp):
                 next_switch = path[i + 1]
                 in_port = self.adjacency[current_switch][prev_switch]
                 out_port = self.adjacency[current_switch][next_switch]
-                self.install_flow(self.datapath_list[current_switch], in_port, out_port, src_ip, dst_ip)
-                self.install_flow(self.datapath_list[current_switch], out_port, in_port, dst_ip, src_ip)
-                self.install_flow_arp(self.datapath_list[current_switch], dst_ip, in_port, out_port)
+                self.install_flow(self.datapath_list[current_switch], in_port, out_port, src_ip, self.flow_arp_dst)
+                self.install_flow(self.datapath_list[current_switch], out_port, in_port, self.flow_arp_dst, src_ip)
+                self.install_flow_arp(self.datapath_list[current_switch], self.flow_arp_dst, in_port, out_port)
                 self.install_flow_arp(self.datapath_list[current_switch], src_ip, out_port, in_port)
                 print("Installed flow: Switch %d, in_port: %d -> out_port: %d" % (current_switch, in_port, out_port))
 
@@ -427,15 +459,14 @@ class MyTopologyApp(app_manager.RyuApp):
             delta_tx_mb = delta_tx / (1024.0 * 1024.0)
             delta_rx_mb = delta_rx / (1024.0 * 1024.0)
 
-            if delta_rx_mb > self.subflow_limit or delta_tx_mb > self.subflow_limit:
-                print ("[INFO] DPID=%s port=%s delta=%d bytes" % (dpid, port_no, delta_tx_mb))
+            #if delta_rx_mb > self.subflow_limit or delta_tx_mb > self.subflow_limit:
                 #self.add_subflow_to_host("h1", "10.0.%s.1/24" % self.subflow_counter, "h1-eth0:%s" % self.subflow_counter)
                 #self.add_subflow_to_host("h2", "10.0.%s.2/24" % self.subflow_counter, "h2-eth0:%s" % self.subflow_counter)
                 #self.subflow_counter += 1
                 #self.subflow_limit += (self.subflow_limit/2)
                 #self.logger.info("[INFO] %s" % self.subflow_limit)
 
-
+       
             if port_no < 99999:
                 neighbor = None
                 for n, p in self.adjacency.get(dpid, {}).items():
@@ -466,8 +497,9 @@ class MyTopologyApp(app_manager.RyuApp):
                 #print(sw1,"TX:", round(max_tx, 2))
                 #print(sw2,"RX:", round(max_rx, 2))
           
-            if max_tx > THRESHOLD_MB or max_rx > THRESHOLD_MB:
+            if max_rx > THRESHOLD_MB or max_tx > THRESHOLD_MB:
                 # 流量過大，要刪除連結
+                print ("[INFO] DPID=%s port=%s delta=%d bytes" % (dpid, port_no, delta_tx_mb))
                 if sw1 in self.adjacency and sw2 in self.adjacency[sw1]:
                     print("remove route: Switch %d <--> Switch %d" % (sw1, sw2))
 
@@ -497,8 +529,8 @@ class MyTopologyApp(app_manager.RyuApp):
                 # 流量小，考慮恢復之前刪除的連結（需超過7秒無明顯改動）
                 if (sw1, sw2) in self.removed_adjacency :
                     last_inactive = self.link_inactive_since.get((sw1, sw2), 0)
-                    print(current_time - last_inactive)
-                    if current_time - last_inactive >= 7:
+                    print(int(current_time) - int(last_inactive))
+                    if current_time - last_inactive >= 100:
                         need_recalculate = True
                         print("restore route: Switch %d <--> Switch %d" % (sw1, sw2))
 
