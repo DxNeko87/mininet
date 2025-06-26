@@ -15,11 +15,24 @@ import heapq
 import time
 import subprocess
 
-port_h2=4
+#port_number_host_connect_to_switch
 port_h1=1
+port_h2=1
+port_h3=1
+port_h4=1
+
+#host_ip
+h1='10.0.0.1'
+h2='10.0.0.2'
+h3='10.0.0.3'
+h4='10.0.0.4'
+
+#host_to_switch_number
 host_switch={
-    1:0,
-    2:4,
+    '1':0,
+    '2':4,
+    '3':5,
+    '4':6,
 }
 
 
@@ -42,50 +55,17 @@ class MyTopologyApp(app_manager.RyuApp):
         self.old_path=[]
         self.monitor_thread = hub.spawn(self._monitor)
         self.ip_counter = 1
-        self.src_subflow_counter = 0
-        self.dst_subflow_counter = 0
         self.read_bandwidth_file("bw.txt")
         self.subflow_counter = 1 
         self.subflow_limit = 30
         self.arp_src ="10.0.0.0"
         self.arp_dst ="10.0.0.0"
-        self.flow_arp_dst ="10.0.0.2"
-        self.flow_ip_dst ="10.0.0.2"
-        self.port_h2=4
         self.src_ip=1
         self.dst_ip=2
         self.arp_flow_table={}
         self.ip_flow_table={}
-
-        """
-        print("Please enter your source host number: ")
-        self.src_ip = int(input())
-        print("Please enter your destination host number: ")
-        self.dst_ip = int(input())
-        if self.dst_ip == 3:
-            self.port_h2=3
-        elif self.dst_ip == 2:
-            self.port_h2=4
-        """
-    def add_subflow_to_host(self, host_name, new_ip, interface):
-        """
-        host_name_ex:h1
-        new_ip_ex:10.0.0.1/24
-        interface_ex:h1-eth0:1
-        """
-        try:
-            with open("/tmp/%s.pid" % host_name, "r") as f:
-                pid = f.read().strip()
-
-            cmd_add_ip = "mnexec -a %s ifconfig %s %s up" % (pid, interface, new_ip)
-            subprocess.check_call(cmd_add_ip, shell=True)
-            print ("[INFO] 成功新增 IP %s 到 %s 的 %s" % (new_ip, host_name, interface))
-
-        except Exception as e:
-            print ("[ERROR] 無法新增 subflow: %s" % str(e))
-
-
-
+        self.check_src = '1'
+      
     def _monitor(self):
         reset_interval = 1
         elapsed_time = 0
@@ -295,11 +275,11 @@ class MyTopologyApp(app_manager.RyuApp):
             if i == 0:
                 # first
                 next_switch = path[i + 1]
-                in_port = port_h1
+                in_port = 1
                 out_port = self.adjacency[current_switch][next_switch]
-                self.install_flow(self.datapath_list[current_switch], in_port, out_port, src_ip, self.flow_arp_dst)
-                self.install_flow(self.datapath_list[current_switch], out_port, in_port, self.flow_arp_dst, src_ip)
-                self.install_flow_arp(self.datapath_list[current_switch], self.flow_arp_dst, in_port, out_port)
+                self.install_flow(self.datapath_list[current_switch], in_port, out_port, src_ip, dst_ip)
+                self.install_flow(self.datapath_list[current_switch], out_port, in_port, dst_ip, src_ip)
+                self.install_flow_arp(self.datapath_list[current_switch], dst_ip, in_port, out_port)
                 self.install_flow_arp(self.datapath_list[current_switch], src_ip, out_port, in_port)
                 print("Installed flow: Switch %d, in_port: %d -> out_port: %d" % (current_switch, in_port, out_port))
 
@@ -307,10 +287,10 @@ class MyTopologyApp(app_manager.RyuApp):
                 # last
                 prev_switch = path[i - 1]
                 in_port = self.adjacency[current_switch][prev_switch]
-                out_port = self.port_h2
-                self.install_flow(self.datapath_list[current_switch], in_port, out_port, src_ip, self.flow_arp_dst)
-                self.install_flow(self.datapath_list[current_switch], out_port, in_port, self.flow_arp_dst, src_ip)
-                self.install_flow_arp(self.datapath_list[current_switch], self.flow_arp_dst, in_port, out_port)
+                out_port = 1
+                self.install_flow(self.datapath_list[current_switch], in_port, out_port, src_ip, dst_ip)
+                self.install_flow(self.datapath_list[current_switch], out_port, in_port, dst_ip, src_ip)
+                self.install_flow_arp(self.datapath_list[current_switch], dst_ip, in_port, out_port)
                 self.install_flow_arp(self.datapath_list[current_switch], src_ip, out_port, in_port)
                 print("Installed flow: Switch %d, in_port: %d -> out_port: %d" % (current_switch, in_port, out_port))
 
@@ -320,9 +300,9 @@ class MyTopologyApp(app_manager.RyuApp):
                 next_switch = path[i + 1]
                 in_port = self.adjacency[current_switch][prev_switch]
                 out_port = self.adjacency[current_switch][next_switch]
-                self.install_flow(self.datapath_list[current_switch], in_port, out_port, src_ip, self.flow_arp_dst)
-                self.install_flow(self.datapath_list[current_switch], out_port, in_port, self.flow_arp_dst, src_ip)
-                self.install_flow_arp(self.datapath_list[current_switch], self.flow_arp_dst, in_port, out_port)
+                self.install_flow(self.datapath_list[current_switch], in_port, out_port, src_ip, dst_ip)
+                self.install_flow(self.datapath_list[current_switch], out_port, in_port, dst_ip, src_ip)
+                self.install_flow_arp(self.datapath_list[current_switch], dst_ip, in_port, out_port)
                 self.install_flow_arp(self.datapath_list[current_switch], src_ip, out_port, in_port)
                 print("Installed flow: Switch %d, in_port: %d -> out_port: %d" % (current_switch, in_port, out_port))
 
@@ -393,6 +373,8 @@ class MyTopologyApp(app_manager.RyuApp):
         if arp_pkt:
             self.arp_src = arp_pkt.src_ip
             self.arp_dst = arp_pkt.dst_ip
+            self.src_ip = self.arp_src[-1]
+            self.dst_ip = self.arp_dst[-1]
             print("ARP Packet - Src IP:", self.arp_src, "Dst IP:", self.arp_dst)
         if len(self.myswitches) > 1:
             # First path for src_ip and dst_ip
@@ -400,8 +382,8 @@ class MyTopologyApp(app_manager.RyuApp):
             #tmp_dst_ip = "10.0.0.%d" % self.dst_ip
             tmp_src_ip = self.arp_src
             tmp_dst_ip = self.arp_dst
-            tmp_host_src = int(self.arp_src[-1])
-            tmp_host_dst = int(self.arp_dst[-1])
+            tmp_host_src = self.arp_src[-1]
+            tmp_host_dst = self.arp_dst[-1]
             if tmp_host_src!=0 and tmp_host_dst!=0:
 	        self.find_max_bandwidth_path(self.myswitches[host_switch[tmp_host_src]], 
 		                            self.myswitches[host_switch[tmp_host_dst]],
@@ -560,8 +542,11 @@ class MyTopologyApp(app_manager.RyuApp):
         # recalculate
         if need_recalculate:
             print("recalculate")
-            temp_src_ip = "10.0.%d.%d" % (self.ip_counter,self.src_ip)
-            temp_dst_ip = "10.0.%d.%d" % (self.ip_counter,self.dst_ip)
+            if self.check_src!=self.src_ip:
+                self.ip_counter=1
+            self.check_src=self.src_ip
+            temp_src_ip = "10.0.%d.%s" % (self.ip_counter,self.src_ip)
+            temp_dst_ip = "10.0.0.%s" % (self.dst_ip)
             self.find_max_bandwidth_path_recalculate(self.myswitches[host_switch[self.src_ip]], self.myswitches[host_switch[self.dst_ip]], temp_src_ip, temp_dst_ip)
 
  
