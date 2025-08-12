@@ -1,72 +1,34 @@
 # -*- coding: utf-8 -*-
-
+# client.py (Python 2)
 import socket
 import time
-import os
+import sys
 
-HOST = '10.0.0.2'
-PORT = 5001
-THRESHOLD = 150  # MBps
-TMP = 0
-LOCAL_IP = ['10.0.0.1']
-COUNTER = 0
-SOCKET_LIST = []
+def start_client(fake_ip):
+    HOST = '10.0.0.2'
+    PORT = 5000
 
-message = b'x' * 5000 
-
-def create_socket(ip):
-    global COUNTER
-
-    print("lol")
+    print "[%s] Connecting to %s:%s..."%(fake_ip, HOST, PORT)
     s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-    s.bind((ip, 0)) 
-    s.settimeout(5.0)  
+
     try:
-        print("[INFO] 嘗試連線：%s ➜ %s" % (ip, HOST))
         s.connect((HOST, PORT))
-        COUNTER += 1
-        print("[OK] 成功建立新連線：%s ➜ %s" % (ip, HOST))
-        return s
-    except socket.error as e:
-        print("[ERROR] 無法連線 %s ➜ %s，錯誤：%s" % (ip, HOST, e))
+    except Exception as e:
+        print "[%s] Failed to connect: %s"%(fake_ip, e)
+        return
+
+    try:
+        while True:
+            msg = 'x' * 1000  # Python 2: str 就是 bytes
+            s.sendall(msg)
+            print "[%s] Sent 1000 bytes"%(fake_ip)
+    except KeyboardInterrupt:
+        print "[%s] Stopped by user."%(fake_ip)
+    except Exception as e:
+        print "[%s] Error: %s"%(fake_ip, e)
+    finally:
         s.close()
-        return None
 
-SOCKET_LIST.append(create_socket(LOCAL_IP[0]))
-
-total_sent_list = [0] 
-start_time = time.time()
-
-try:
-    while True:
-        for idx, sock in enumerate(SOCKET_LIST):
-            sock.sendall(message)
-            total_sent_list[idx] += len(message)
-
-        elapsed = time.time() - start_time
-        if elapsed >= 1.0:
-            total_bytes = sum(total_sent_list)
-            rate_mbps = (total_bytes * 8) / 1024 / 1024 / elapsed
-
-            print("Send rate: %.2f MBPS" % rate_mbps)
-            if rate_mbps - TMP >= THRESHOLD:
-                TMP = rate_mbps
-                tmp_ip = '10.0.%d.1' % COUNTER
-                os.system("ifconfig h1-eth0:%d %s/24 up"%(COUNTER,tmp_ip))
-                rd = COUNTER
-                print("test")
-                new_sock = create_socket(tmp_ip)
-                print(elapsed)
-                if COUNTER != rd:
- 		    SOCKET_LIST.append(new_sock)
-                    LOCAL_IP.append(tmp_ip)
-                    total_sent_list.append(0)
-
-            # reset counter
-            total_sent_list = [0 for _ in SOCKET_LIST]
-            start_time = time.time()
-
-except KeyboardInterrupt:
-    for s in SOCKET_LIST:
-        s.close()
-    print("Stopped by user")
+if __name__ == "__main__":
+    fake_ip = sys.argv[1] if len(sys.argv) > 1 else "10.0.0.1"
+    start_client(fake_ip)
