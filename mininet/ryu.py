@@ -104,27 +104,16 @@ class MyTopologyApp(app_manager.RyuApp):
                         print ("Invalid line format in bw.txt:", line)
         except IOError:
             print ("Error: Could not read file", filename)
+
     def install_flow(self, datapath ,in_port, out_port, src_ip, dst_ip):
         ofproto = datapath.ofproto
         parser = datapath.ofproto_parser
 	
-        key = (datapath.id,in_port,dst_ip)
-
-        if not hasattr(self, 'ip_flow_table'):
-            self.ip_flow_table = {}
-
-        if key not in self.ip_flow_table:
-            self.ip_flow_table[key] = set()
-
-        if out_port in self.ip_flow_table[key]:
-            return 
-
-        match = parser.OFPMatch(eth_type=0x0800, in_port=in_port, ipv4_src=src_ip, ipv4_dst=dst_ip) 
-        self.ip_flow_table[key].add(out_port)  
-        actions = [parser.OFPActionOutput(p) for p in sorted(self.ip_flow_table[key])]
+        match = parser.OFPMatch(eth_type=0x0800, in_port=in_port, ipv4_src=src_ip, ipv4_dst=dst_ip)   
+        actions = [parser.OFPActionOutput(out_port)]
 
         inst = [parser.OFPInstructionActions(ofproto.OFPIT_APPLY_ACTIONS, actions)]
-        mod = parser.OFPFlowMod(datapath=datapath, match=match, instructions=inst, command=ofproto.OFPFC_ADD)
+        mod = parser.OFPFlowMod(datapath=datapath, match=match, instructions=inst)
         datapath.send_msg(mod)
 
     def install_flow_arp(self, datapath, arp_tpa, in_port, out_port):
@@ -417,7 +406,7 @@ class MyTopologyApp(app_manager.RyuApp):
             self.link_inactive_since = {}
 
         body = ev.msg.body
-        THRESHOLD_MB = 20.0  # 門檻大小（MB）
+        THRESHOLD_MB = 10.0  # 門檻大小（MB）
 
         dpid = ev.msg.datapath.id
         need_recalculate = False
