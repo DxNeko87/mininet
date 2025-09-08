@@ -15,22 +15,10 @@ import heapq
 import time
 import subprocess
 
-#port_number_host_connect_to_switch
-port_h1=1
-port_h2=1
-port_h3=1
-port_h4=1
-
-#host_ip
-h1='10.0.0.1'
-h2='10.0.0.2'
-h3='10.0.0.3'
-h4='10.0.0.4'
-
 #host_to_switch_number
 host_switch={
     '1':0,
-    '2':4,
+    '2':8,
     '3':5,
     '4':6,
 }
@@ -254,6 +242,34 @@ class MyTopologyApp(app_manager.RyuApp):
         # **install after all best found**
         self.install_flows(path, src_ip,dst_ip)
 
+        for i in range(len(path) - 1):
+            sw1 = path[i]
+            sw2 = path[i + 1]
+
+            if sw2 in self.adjacency[sw1]:
+                port1 = self.adjacency[sw1][sw2]
+                port2 = self.adjacency[sw2][sw1]
+
+                # 把刪掉的連結存到 removed_adjacency
+                self.removed_adjacency[(sw1, sw2)] = (port1, port2)
+                self.removed_adjacency[(sw2, sw1)] = (port2, port1)
+
+                # 同時刪除 adjacency 中的連結
+                del self.adjacency[sw1][sw2]
+                del self.adjacency[sw2][sw1]
+
+                # 把帶寬也移到 removed_bandwidth
+                if (sw1, sw2) in self.bandwidth:
+                    bw_value = self.bandwidth[sw1][sw2]
+                    self.removed_bandwidth[(sw1, sw2)] = bw_value
+                    self.removed_bandwidth[(sw2, sw1)] = bw_value
+                    del self.bandwidth[sw1][sw2]
+                    del self.bandwidth[sw2][sw1]
+
+                # 紀錄刪除的時間
+                self.link_inactive_since[(sw1, sw2)] = time.time()
+                self.link_inactive_since[(sw2, sw1)] = time.time()
+
     def install_flows(self, path, src_ip, dst_ip):
         """
         install after best found
@@ -320,8 +336,8 @@ class MyTopologyApp(app_manager.RyuApp):
             self.adjacency[switch.dp.id] = {}
 
         print ("Switches in the topology:")
-        for switch_id in self.myswitches:
-            print ("Switch ID: %d" % switch_id)
+        #for switch_id in self.myswitches:
+            #print ("Switch ID: %d" % switch_id)
 
         links_list = get_link(self.topology_api_app, None)
         mylinks = [(link.src.dpid, link.dst.dpid, link.src.port_no, link.dst.port_no) for link in links_list]
@@ -330,16 +346,16 @@ class MyTopologyApp(app_manager.RyuApp):
         for s1, s2, port1, port2 in mylinks:
             self.adjacency[s1][s2] = port1
             self.adjacency[s2][s1] = port2
-            print ("Switch %d: Port %d <---> Switch %d: Port %d" % (s1, port1, s2, port2))
+            #print ("Switch %d: Port %d <---> Switch %d: Port %d" % (s1, port1, s2, port2))
 
         print ("Adjacency matrix:")
-        for s1 in self.adjacency:
-            for s2 in self.adjacency[s1]:
-                print ("Switch %d -> Switch %d via Port %d" % (s1, s2, self.adjacency[s1][s2]))
+        #for s1 in self.adjacency:
+            #for s2 in self.adjacency[s1]:
+                #print ("Switch %d -> Switch %d via Port %d" % (s1, s2, self.adjacency[s1][s2]))
 
-        print("-------------------------")
-        print(self.adjacency)
-        print("-------------------------")
+        #print("-------------------------")
+        #print(self.adjacency)
+        #print("-------------------------")
 
     def request_stats(self, datapath):
         """
@@ -500,7 +516,7 @@ class MyTopologyApp(app_manager.RyuApp):
                 # 流量小，考慮恢復之前刪除的連結（需超過7秒無明顯改動）
                 if (sw1, sw2) in self.removed_adjacency :
                     last_inactive = self.link_inactive_since.get((sw1, sw2), 0)
-                    print(int(current_time) - int(last_inactive))
+                    #print(int(current_time) - int(last_inactive))
                     if current_time - last_inactive >= 100:
                         need_recalculate = True
                         print("restore route: Switch %d <--> Switch %d" % (sw1, sw2))
