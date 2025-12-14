@@ -1,5 +1,4 @@
 # -*- coding: utf-8 -*-
-
 from os import link, remove
 from xml.sax.handler import property_dom_node
 from ryu.base import app_manager
@@ -23,7 +22,6 @@ host_switch={
     '4':6,
 }
 
-
 class MyTopologyApp(app_manager.RyuApp):
     OFP_VERSIONS = [ofproto_v1_3.OFP_VERSION]
 
@@ -34,8 +32,9 @@ class MyTopologyApp(app_manager.RyuApp):
         self.adjacency = {}
         self.datapath_list = {}
         self.bandwidth = {}
+        self.original_bandwidth = {}  # 保存原始带宽
         self.host_to_switch = {}
-        self.mac_to_port = {} 
+        self.mac_to_port = {}
         self.port_stats = {}  # save port data
         self.removed_bandwidth = {}
         self.removed_adjacency ={}
@@ -44,7 +43,7 @@ class MyTopologyApp(app_manager.RyuApp):
         self.monitor_thread = hub.spawn(self._monitor)
         self.ip_counter = 1
         self.read_bandwidth_file("bw.txt")
-        self.subflow_counter = 1 
+        self.subflow_counter = 1
         self.subflow_limit = 30
         self.arp_src ="10.0.0.0"
         self.arp_dst ="10.0.0.0"
@@ -53,24 +52,24 @@ class MyTopologyApp(app_manager.RyuApp):
         self.arp_flow_table={}
         self.ip_flow_table={}
         self.check_src = '1'
-      
+        self.allocated_flows = {}  # 记录已分配的流及其占用的带宽
+
     def _monitor(self):
         reset_interval = 1
         elapsed_time = 0
-
         while True:
             if elapsed_time > reset_interval:
                 self.port_stats.clear()
                 elapsed_time = 0
-                print("--------------------")
+            print("--------------------")
             for datapath in self.datapath_list.values():
                 self.request_stats(datapath)
-            hub.sleep(1)  
+            hub.sleep(1)
             elapsed_time += 1
 
     def read_bandwidth_file(self, filename):
         """
-        read bandwidth file save it in 'self.bandwidth'
+        read bandwidth file save it in 'self.bandwidth' and 'self.original_bandwidth'
         """
         try:
             with open(filename, "r") as file:
@@ -83,23 +82,26 @@ class MyTopologyApp(app_manager.RyuApp):
                         # save bandwidth data
                         if node1 not in self.bandwidth:
                             self.bandwidth[node1] = {}
+                            self.original_bandwidth[node1] = {}
                         self.bandwidth[node1][node2] = bw
+                        self.original_bandwidth[node1][node2] = bw
                         # bidirection connect(if needed)
                         if node2 not in self.bandwidth:
                             self.bandwidth[node2] = {}
+                            self.original_bandwidth[node2] = {}
                         self.bandwidth[node2][node1] = bw
+                        self.original_bandwidth[node2][node1] = bw
                     else:
                         print ("Invalid line format in bw.txt:", line)
         except IOError:
-            print ("Error: Could not read file", filename)
+            print ("getting bandwidth of each links")
+            #print ("Error: Could not read file", filename)
 
     def install_flow(self, datapath ,in_port, out_port, src_ip, dst_ip):
         ofproto = datapath.ofproto
         parser = datapath.ofproto_parser
-	
-        match = parser.OFPMatch(eth_type=0x0800, in_port=in_port, ipv4_src=src_ip, ipv4_dst=dst_ip)   
+        match = parser.OFPMatch(eth_type=0x0800, in_port=in_port, ipv4_src=src_ip, ipv4_dst=dst_ip)
         actions = [parser.OFPActionOutput(out_port)]
-
         inst = [parser.OFPInstructionActions(ofproto.OFPIT_APPLY_ACTIONS, actions)]
         mod = parser.OFPFlowMod(datapath=datapath, match=match, instructions=inst)
         datapath.send_msg(mod)
@@ -107,29 +109,21 @@ class MyTopologyApp(app_manager.RyuApp):
     def install_flow_arp(self, datapath, arp_tpa, in_port, out_port):
         ofproto = datapath.ofproto
         parser = datapath.ofproto_parser
-	
         key = (datapath.id,in_port,arp_tpa)
-     
         if not hasattr(self, 'arp_flow_table'):
             self.arp_flow_table = {}
-
         if key not in self.arp_flow_table:
             self.arp_flow_table[key] = set()
-
         if out_port in self.arp_flow_table[key]:
-            return       
-
+            return
         self.arp_flow_table[key].add(out_port)
-        match = parser.OFPMatch(eth_type=0x0806,arp_tpa=arp_tpa ,in_port=in_port)   
+        match = parser.OFPMatch(eth_type=0x0806,arp_tpa=arp_tpa ,in_port=in_port)
         actions = [parser.OFPActionOutput(p) for p in sorted(self.arp_flow_table[key])]
         self.logger.info(match)
-        self.logger.info(">>>>>>>>>>>>>>>>>>>>>>>>>>>>>") 
+        self.logger.info(">>>>>>>>>>>>>>>>>>>>>>>>>>>>>")
         inst = [parser.OFPInstructionActions(ofproto.OFPIT_APPLY_ACTIONS, actions)]
         mod = parser.OFPFlowMod(datapath=datapath, match=match, instructions=inst, command=ofproto.OFPFC_ADD)
-        
         datapath.send_msg(mod)
-
-
 
     def delete_all_flows(self, datapath):
         """
@@ -137,7 +131,6 @@ class MyTopologyApp(app_manager.RyuApp):
         """
         ofproto = datapath.ofproto
         parser = datapath.ofproto_parser
-
         # Create a flow mod message to delete all flows except those with output to controller
         match = parser.OFPMatch(priority=65534)  # Match all flows
         mod = parser.OFPFlowMod(
@@ -148,22 +141,72 @@ class MyTopologyApp(app_manager.RyuApp):
             match=match,
             instructions=[],
         )
-
         datapath.send_msg(mod)
         print ("Deleted all flows in switch", datapath.id, "except controller-related flows")
+
+    def get_path_bottleneck_bandwidth(self, path):
+        """
+        找到路径上的瓶颈带宽（最小带宽）
+        """
+        if len(path) <= 1:
+            return float('inf')
+        
+        min_bandwidth = float('inf')
+        for i in range(len(path) - 1):
+            sw1 = path[i]
+            sw2 = path[i + 1]
+            if sw1 in self.bandwidth and sw2 in self.bandwidth[sw1]:
+                link_bw = self.bandwidth[sw1][sw2]
+                min_bandwidth = min(min_bandwidth, link_bw)
+                print("Link",sw1,"<->",sw2,": current bandwidth =" ,link_bw)
+        
+        print("Path bottleneck bandwidth: ",min_bandwidth,)
+        return min_bandwidth if min_bandwidth != float('inf') else 0
+
+    def allocate_bandwidth_for_path(self, path, allocated_bandwidth):
+        """
+        为路径分配带宽：从路径上每个链路减去分配的带宽
+        """
+        print("Allocating ",allocated_bandwidth, "bandwidth for path:",' -> '.join(map(str, path)))
+        
+        for i in range(len(path) - 1):
+            sw1 = path[i]
+            sw2 = path[i + 1]
+            if sw1 in self.bandwidth and sw2 in self.bandwidth[sw1]:
+                # 减去分配的带宽，但不能低于0
+                old_bw = self.bandwidth[sw1][sw2]
+                self.bandwidth[sw1][sw2] = max(0, self.bandwidth[sw1][sw2] - allocated_bandwidth)
+                self.bandwidth[sw2][sw1] = max(0, self.bandwidth[sw2][sw1] - allocated_bandwidth)
+                print("Link" ,sw1,"<->",sw2,old_bw," -> ",self.bandwidth[sw1][sw2]," (allocated: ",allocated_bandwidth,")")
+
+    def deallocate_bandwidth_for_path(self, path, allocated_bandwidth):
+        """
+        为路径释放带宽：恢复路径上每个链路的带宽（不超过原始带宽）
+        """
+        print("Deallocating" ,allocated_bandwidth, "bandwidth for path: ",' -> '.join(map(str, path)))
+        
+        for i in range(len(path) - 1):
+            sw1 = path[i]
+            sw2 = path[i + 1]
+            if sw1 in self.bandwidth and sw2 in self.bandwidth[sw1]:
+                # 恢复带宽，但不超过原始带宽
+                original_bw = self.original_bandwidth.get(sw1, {}).get(sw2, float('inf'))
+                old_bw = self.bandwidth[sw1][sw2]
+                self.bandwidth[sw1][sw2] = min(original_bw, self.bandwidth[sw1][sw2] + allocated_bandwidth)
+                self.bandwidth[sw2][sw1] = min(original_bw, self.bandwidth[sw2][sw1] + allocated_bandwidth)
+                print("Link ",sw1,"<->",sw2,": ",old_bw," -> ",self.bandwidth[sw1][sw2]," (deallocated: ",allocated_bandwidth,")")
 
     def find_max_bandwidth_path_recalculate(self, src, dst, src_ip, dst_ip):
         """
         Dijkstra algorithm to find the path with maximum bandwidth.
-        After finding the path, install flow entries.
+        After finding the path, allocate bandwidth for the path.
         """
         # initial
         max_bandwidth = {switch: float('-inf') for switch in self.adjacency}
         prev = {switch: None for switch in self.adjacency}
         max_bandwidth[src] = float('inf')
+        pq = [(-float('inf'), src)]
 
-       
-        pq = [(-float('inf'), src)]  
         while pq:
             bw, u = heapq.heappop(pq)
             bw = -bw  # take back positive
@@ -172,13 +215,16 @@ class MyTopologyApp(app_manager.RyuApp):
                 break  # find dst, end search
 
             for v in self.adjacency[u]:
+                if self.bandwidth[u][v] <= 0: 
+                    continue 
                 min_bw = min(bw, self.bandwidth[u][v])  # calculate bw
                 if min_bw > max_bandwidth[v]:  # find better route
                     max_bandwidth[v] = min_bw
                     prev[v] = u
                     heapq.heappush(pq, (-min_bw, v))  # negative into stack
-        self.old_path=self.new_path
-        # recreate
+
+        self.old_path = self.new_path
+        # recreate path
         path = []
         current = dst
         while current is not None:
@@ -189,28 +235,48 @@ class MyTopologyApp(app_manager.RyuApp):
         if not path or len(path) == 1:
             print("No valid path found from", src, "to", dst)
             return
-	
+
         print("Max bandwidth path:", " -> ".join(map(str, path)))
-        self.new_path=path
-        print(self.old_path)
-        print(self.new_path)
-        if(self.old_path!=self.new_path):
+        self.new_path = path
+        print("Old path:", self.old_path)
+        print("New path:", self.new_path)
+
+        if self.old_path != self.new_path:
+            # 如果有旧路径，先释放其带宽
+            if self.old_path and len(self.old_path) > 1:
+                flow_key = (src_ip, dst_ip)
+                if flow_key in self.allocated_flows:
+                    old_allocated_bw = self.allocated_flows[flow_key]['allocated_bandwidth']
+                    self.deallocate_bandwidth_for_path(self.old_path, old_allocated_bw)
+                    del self.allocated_flows[flow_key]
+
             # **install after all best found**
-            self.install_flows(path, src_ip,dst_ip)
-            self.ip_counter+=1
+            self.install_flows(path, src_ip, dst_ip)
+            
+            # 计算新路径的瓶颈带宽并分配
+            bottleneck_bw = self.get_path_bottleneck_bandwidth(path)
+            if bottleneck_bw > 0:
+                self.allocate_bandwidth_for_path(path, bottleneck_bw)
+                # 记录分配的流
+                flow_key = (src_ip, dst_ip)
+                self.allocated_flows[flow_key] = {
+                    'path': path,
+                    'allocated_bandwidth': bottleneck_bw
+                }
+
+            self.ip_counter += 1
 
     def find_max_bandwidth_path(self, src, dst, src_ip, dst_ip):
         """
         Dijkstra algorithm to find the path with maximum bandwidth.
-        After finding the path, install flow entries.
+        After finding the path, allocate bandwidth for the path.
         """
         # initial
         max_bandwidth = {switch: float('-inf') for switch in self.adjacency}
         prev = {switch: None for switch in self.adjacency}
         max_bandwidth[src] = float('inf')
+        pq = [(-float('inf'), src)]
 
-       
-        pq = [(-float('inf'), src)]  
         while pq:
             bw, u = heapq.heappop(pq)
             bw = -bw  # take back positive
@@ -219,13 +285,17 @@ class MyTopologyApp(app_manager.RyuApp):
                 break  # find dst, end search
 
             for v in self.adjacency[u]:
+
+                if self.bandwidth[u][v] <= 0:
+                    continue
                 min_bw = min(bw, self.bandwidth[u][v])  # calculate bw
                 if min_bw > max_bandwidth[v]:  # find better route
                     max_bandwidth[v] = min_bw
                     prev[v] = u
                     heapq.heappush(pq, (-min_bw, v))  # negative into stack
-        self.old_path=self.new_path
-        # recreate
+
+        self.old_path = self.new_path
+        # recreate path
         path = []
         current = dst
         while current is not None:
@@ -236,39 +306,23 @@ class MyTopologyApp(app_manager.RyuApp):
         if not path or len(path) == 1:
             print("No valid path found from", src, "to", dst)
             return
-	
+
         print("Max bandwidth path:", " -> ".join(map(str, path)))
-        self.new_path=path
+        self.new_path = path
+
         # **install after all best found**
-        self.install_flows(path, src_ip,dst_ip)
-
-        for i in range(len(path) - 1):
-            sw1 = path[i]
-            sw2 = path[i + 1]
-
-            if sw2 in self.adjacency[sw1]:
-                port1 = self.adjacency[sw1][sw2]
-                port2 = self.adjacency[sw2][sw1]
-
-                # 把刪掉的連結存到 removed_adjacency
-                self.removed_adjacency[(sw1, sw2)] = (port1, port2)
-                self.removed_adjacency[(sw2, sw1)] = (port2, port1)
-
-                # 同時刪除 adjacency 中的連結
-                del self.adjacency[sw1][sw2]
-                del self.adjacency[sw2][sw1]
-
-                # 把帶寬也移到 removed_bandwidth
-                if (sw1, sw2) in self.bandwidth:
-                    bw_value = self.bandwidth[sw1][sw2]
-                    self.removed_bandwidth[(sw1, sw2)] = bw_value
-                    self.removed_bandwidth[(sw2, sw1)] = bw_value
-                    del self.bandwidth[sw1][sw2]
-                    del self.bandwidth[sw2][sw1]
-
-                # 紀錄刪除的時間
-                self.link_inactive_since[(sw1, sw2)] = time.time()
-                self.link_inactive_since[(sw2, sw1)] = time.time()
+        self.install_flows(path, src_ip, dst_ip)
+        
+        # 计算路径的瓶颈带宽并分配
+        bottleneck_bw = self.get_path_bottleneck_bandwidth(path)
+        if bottleneck_bw > 0:
+            self.allocate_bandwidth_for_path(path, bottleneck_bw)
+            # 记录分配的流
+            flow_key = (src_ip, dst_ip)
+            self.allocated_flows[flow_key] = {
+                'path': path,
+                'allocated_bandwidth': bottleneck_bw
+            }
 
     def install_flows(self, path, src_ip, dst_ip):
         """
@@ -276,9 +330,7 @@ class MyTopologyApp(app_manager.RyuApp):
         """
         for i in range(len(path)):
             current_switch = path[i]
-
-            if i == 0:
-                # first
+            if i == 0:  # first
                 next_switch = path[i + 1]
                 in_port = 1
                 out_port = self.adjacency[current_switch][next_switch]
@@ -287,9 +339,7 @@ class MyTopologyApp(app_manager.RyuApp):
                 self.install_flow_arp(self.datapath_list[current_switch], dst_ip, in_port, out_port)
                 self.install_flow_arp(self.datapath_list[current_switch], src_ip, out_port, in_port)
                 print("Installed flow: Switch %d, in_port: %d -> out_port: %d" % (current_switch, in_port, out_port))
-
-            elif i == len(path) - 1:
-                # last
+            elif i == len(path) - 1:  # last
                 prev_switch = path[i - 1]
                 in_port = self.adjacency[current_switch][prev_switch]
                 out_port = 1
@@ -298,9 +348,7 @@ class MyTopologyApp(app_manager.RyuApp):
                 self.install_flow_arp(self.datapath_list[current_switch], dst_ip, in_port, out_port)
                 self.install_flow_arp(self.datapath_list[current_switch], src_ip, out_port, in_port)
                 print("Installed flow: Switch %d, in_port: %d -> out_port: %d" % (current_switch, in_port, out_port))
-
-            else:
-                # mid
+            else:  # mid
                 prev_switch = path[i - 1]
                 next_switch = path[i + 1]
                 in_port = self.adjacency[current_switch][prev_switch]
@@ -312,21 +360,16 @@ class MyTopologyApp(app_manager.RyuApp):
                 print("Installed flow: Switch %d, in_port: %d -> out_port: %d" % (current_switch, in_port, out_port))
 
         print("Largest bandwidth route:", " -> ".join(map(str, path)))
-    
-    @set_ev_cls([event.EventSwitchEnter,
-                 event.EventSwitchLeave,
-                 event.EventPortAdd,
-                 event.EventPortDelete,
-                 event.EventPortModify,
-                 event.EventLinkAdd,
-                 event.EventLinkDelete,
-                 event.EventHostAdd])
+
+    @set_ev_cls([event.EventSwitchEnter, event.EventSwitchLeave, event.EventPortAdd, 
+                event.EventPortDelete, event.EventPortModify, event.EventLinkAdd, 
+                event.EventLinkDelete, event.EventHostAdd])
     def get_topology_data(self, ev):
         """
         Get Topology Data
         Switch total
-	    Links total
-	    Adjacency matrix	
+        Links total
+        Adjacency matrix
         """
         print ("get_topology_data() is called")
         switch_list = get_switch(self.topology_api_app, None)
@@ -336,26 +379,26 @@ class MyTopologyApp(app_manager.RyuApp):
             self.adjacency[switch.dp.id] = {}
 
         print ("Switches in the topology:")
-        #for switch_id in self.myswitches:
-            #print ("Switch ID: %d" % switch_id)
+        for switch_id in self.myswitches:
+            print ("Switch ID: %d" % switch_id)
 
         links_list = get_link(self.topology_api_app, None)
-        mylinks = [(link.src.dpid, link.dst.dpid, link.src.port_no, link.dst.port_no) for link in links_list]
-	
+        mylinks = [(link.src.dpid, link.dst.dpid, link.src.port_no, link.dst.port_no) 
+                  for link in links_list]
         print ("Links in the topology:")
         for s1, s2, port1, port2 in mylinks:
             self.adjacency[s1][s2] = port1
             self.adjacency[s2][s1] = port2
-            #print ("Switch %d: Port %d <---> Switch %d: Port %d" % (s1, port1, s2, port2))
+            print ("Switch %d: Port %d <---> Switch %d: Port %d" % (s1, port1, s2, port2))
 
         print ("Adjacency matrix:")
-        #for s1 in self.adjacency:
-            #for s2 in self.adjacency[s1]:
-                #print ("Switch %d -> Switch %d via Port %d" % (s1, s2, self.adjacency[s1][s2]))
+        for s1 in self.adjacency:
+            for s2 in self.adjacency[s1]:
+                print ("Switch %d -> Switch %d via Port %d" % (s1, s2, self.adjacency[s1][s2]))
 
-        #print("-------------------------")
-        #print(self.adjacency)
-        #print("-------------------------")
+        print("-------------------------")
+        print(self.adjacency)
+        print("-------------------------")
 
     def request_stats(self, datapath):
         """
@@ -364,15 +407,16 @@ class MyTopologyApp(app_manager.RyuApp):
         parser = datapath.ofproto_parser
         req = parser.OFPPortStatsRequest(datapath, 0, ofproto_v1_3.OFPP_ANY)
         datapath.send_msg(req)
-      
+
     @set_ev_cls(ofp_event.EventOFPPacketIn, MAIN_DISPATCHER)
     def packet_in_handler(self, ev):
         msg = ev.msg
         pkt = packet.Packet(msg.data)
-
         eth = pkt.get_protocol(ethernet.ethernet)
+
         if eth.ethertype != 0x0806:  # 0x0806 是 ARP 封包
             return
+
         self.logger.info(eth)
         arp_pkt = pkt.get_protocol(arp.arp)
         if arp_pkt:
@@ -381,19 +425,17 @@ class MyTopologyApp(app_manager.RyuApp):
             self.src_ip = self.arp_src[-1]
             self.dst_ip = self.arp_dst[-1]
             print("ARP Packet - Src IP:", self.arp_src, "Dst IP:", self.arp_dst)
-        if len(self.myswitches) > 1:
-            # First path for src_ip and dst_ip
-            #tmp_src_ip = "10.0.0.%d" % self.src_ip
-            #tmp_dst_ip = "10.0.0.%d" % self.dst_ip
-            tmp_src_ip = self.arp_src
-            tmp_dst_ip = self.arp_dst
-            tmp_host_src = self.arp_src[-1]
-            tmp_host_dst = self.arp_dst[-1]
-            if tmp_host_src!=0 and tmp_host_dst!=0:
-	        self.find_max_bandwidth_path(self.myswitches[host_switch[tmp_host_src]], 
-		                            self.myswitches[host_switch[tmp_host_dst]],
-		                            tmp_src_ip, 
-		                            tmp_dst_ip)
+
+            if len(self.myswitches) > 1:
+                # First path for src_ip and dst_ip
+                tmp_src_ip = self.arp_src
+                tmp_dst_ip = self.arp_dst
+                tmp_host_src = self.arp_src[-1]
+                tmp_host_dst = self.arp_dst[-1]
+                if tmp_host_src != 0 and tmp_host_dst != 0:
+                    self.find_max_bandwidth_path(self.myswitches[host_switch[tmp_host_src]], 
+                                                self.myswitches[host_switch[tmp_host_dst]], 
+                                                tmp_src_ip, tmp_dst_ip)
 
     @set_ev_cls(ofp_event.EventOFPSwitchFeatures, CONFIG_DISPATCHER)
     def switch_features_handler(self, ev):
@@ -403,18 +445,15 @@ class MyTopologyApp(app_manager.RyuApp):
 
         # 讓所有 ARP 封包都送進 Controller
         match = parser.OFPMatch(eth_type=0x0806)
-        actions = [parser.OFPActionOutput(ofproto.OFPP_CONTROLLER,
-                                       ofproto.OFPCML_NO_BUFFER)]
-        inst = [parser.OFPInstructionActions(ofproto.OFPIT_APPLY_ACTIONS,
-                                         actions)]
-        mod = parser.OFPFlowMod(datapath=datapath, priority=1,
-                            match=match, instructions=inst)
+        actions = [parser.OFPActionOutput(ofproto.OFPP_CONTROLLER, ofproto.OFPCML_NO_BUFFER)]
+        inst = [parser.OFPInstructionActions(ofproto.OFPIT_APPLY_ACTIONS, actions)]
+        mod = parser.OFPFlowMod(datapath=datapath, priority=1, match=match, instructions=inst)
         datapath.send_msg(mod)
 
     @set_ev_cls(ofp_event.EventOFPPortStatsReply, MAIN_DISPATCHER)
     def port_stats_reply_handler(self, ev):
         """
-        Handle switch received data
+        Handle switch received data - simplified version focusing on bandwidth management
         """
         if not hasattr(self, 'removed_link_stats'):
             self.removed_link_stats = {}
@@ -422,16 +461,12 @@ class MyTopologyApp(app_manager.RyuApp):
             self.link_inactive_since = {}
 
         body = ev.msg.body
-        THRESHOLD_MB = 10.0  # 門檻大小（MB）
-
+        THRESHOLD_MB = 1.0  # 門檻大小（MB）
         dpid = ev.msg.datapath.id
         need_recalculate = False
-        removed_links = []
-
-        link_loads = {}
         current_time = time.time()
 
-        # 第一步：收集所有 port 的流量變化量
+        # 简化的流量监控，主要用于触发重新计算
         for stat in body:
             port_no = stat.port_no
             tx_bytes = stat.tx_bytes
@@ -440,118 +475,27 @@ class MyTopologyApp(app_manager.RyuApp):
             prev_tx, prev_rx = self.port_stats.get((dpid, port_no), (tx_bytes, rx_bytes))
             delta_tx = tx_bytes - prev_tx
             delta_rx = rx_bytes - prev_rx
-            
             self.port_stats[(dpid, port_no)] = (tx_bytes, rx_bytes)
 
             delta_tx_mb = delta_tx / (1024.0 * 1024.0)
             delta_rx_mb = delta_rx / (1024.0 * 1024.0)
 
-            #if delta_rx_mb > self.subflow_limit or delta_tx_mb > self.subflow_limit:
-                #self.add_subflow_to_host("h1", "10.0.%s.1/24" % self.subflow_counter, "h1-eth0:%s" % self.subflow_counter)
-                #self.add_subflow_to_host("h2", "10.0.%s.2/24" % self.subflow_counter, "h2-eth0:%s" % self.subflow_counter)
-                #self.subflow_counter += 1
-                #self.subflow_limit += (self.subflow_limit/2)
-                #self.logger.info("[INFO] %s" % self.subflow_limit)
+            # 当流量超过阈值时，标记需要重新计算
+            if port_no < 99999 and (delta_rx_mb > THRESHOLD_MB or delta_tx_mb > THRESHOLD_MB):
+                print("[INFO] High traffic detected: DPID={dpid} port={port_no} ")
+                print("TX={round(delta_tx_mb, 2)}MB RX={round(delta_rx_mb, 2)}MB")
+                need_recalculate = True
 
-       
-            if port_no < 99999:
-                neighbor = None
-                for n, p in self.adjacency.get(dpid, {}).items():
-                    if p == port_no:
-                        neighbor = n
-                        break
-                if neighbor is None:
-                    for link in self.removed_adjacency:
-                        if dpid in link:
-                            other_sw = link[0] if link[1] == dpid else link[1]
-                            port1, port2 = self.removed_adjacency[link]
-                            if dpid == link[0] and port_no == port1:
-                                neighbor = other_sw
-                                break
-                            elif dpid == link[1] and port_no == port2:
-                                neighbor = other_sw
-                                break
-                if neighbor is not None:
-                    link_key = tuple(sorted((dpid, neighbor)))
-                    current_load = link_loads.get(link_key, (0, 0))
-                    max_tx = max(current_load[0], delta_tx_mb)
-                    max_rx = max(current_load[1], delta_rx_mb)
-                    link_loads[link_key] = (max_tx, max_rx)
-          
-        # 第二步：決定要刪除連結或恢復連結
-        for (sw1, sw2), (max_tx, max_rx) in link_loads.iteritems():
-            #if max_tx > 1 or max_rx > 1:
-                #print(sw1,"TX:", round(max_tx, 2))
-                #print(sw2,"RX:", round(max_rx, 2))
-          
-            if max_rx > THRESHOLD_MB or max_tx > THRESHOLD_MB:
-                # 流量過大，要刪除連結
-                print ("[INFO] DPID=%s port=%s delta=%d bytes" % (dpid, port_no, delta_tx_mb))
-                if sw1 in self.adjacency and sw2 in self.adjacency[sw1]:
-                    print("remove route: Switch %d <--> Switch %d" % (sw1, sw2))
-
-                    # 保留流量負載數據，即使刪除 adjacency
-                    link_loads[(sw1, sw2)] = (max_tx, max_rx)
-
-                    # 保存 removed_adjacency 和 removed_bandwidth
-                    self.removed_adjacency[(sw1, sw2)] = (self.adjacency[sw1][sw2], self.adjacency[sw2][sw1])
-
-                    if sw1 in self.bandwidth and sw2 in self.bandwidth[sw1]:
-                        bw_value = self.bandwidth[sw1][sw2]
-                        self.removed_bandwidth[(sw1, sw2)] = bw_value
-
-                    # 刪除 adjacency 和 bandwidth
-                    del self.adjacency[sw1][sw2]
-                    del self.adjacency[sw2][sw1]
-                    if sw1 in self.bandwidth and sw2 in self.bandwidth[sw1]:
-                        del self.bandwidth[sw1][sw2]
-                        del self.bandwidth[sw2][sw1]
-
-                    # 記錄移除時間
-                    self.link_inactive_since[(sw1, sw2)] = current_time
-                    removed_links.append((sw1, sw2))
-                    need_recalculate = True
-
-            else:
-                # 流量小，考慮恢復之前刪除的連結（需超過7秒無明顯改動）
-                if (sw1, sw2) in self.removed_adjacency :
-                    last_inactive = self.link_inactive_since.get((sw1, sw2), 0)
-                    #print(int(current_time) - int(last_inactive))
-                    if current_time - last_inactive >= 100:
-                        need_recalculate = True
-                        print("restore route: Switch %d <--> Switch %d" % (sw1, sw2))
-
-                        # re from removed_adjacency 中恢復連接
-                        port1, port2 = self.removed_adjacency[(sw1, sw2)]
-
-                        # re adjacency
-                        self.adjacency.setdefault(sw1, {})[sw2] = port1
-                        self.adjacency.setdefault(sw2, {})[sw1] = port2
-
-                        # re bandwidth
-                        if (sw1, sw2) in self.removed_bandwidth:
-                            bw_value = self.removed_bandwidth[(sw1, sw2)]
-                            self.bandwidth.setdefault(sw1, {})[sw2] = bw_value
-                            self.bandwidth.setdefault(sw2, {})[sw1] = bw_value
-                            del self.removed_bandwidth[(sw1, sw2)]
-
-                        # re then delete
-                        del self.removed_adjacency[(sw1, sw2)]
-                        del self.link_inactive_since[(sw1, sw2)]
-                        break  # re 1
-            
-            if (sw1, sw2) in self.removed_adjacency :
-                if max_tx > THRESHOLD_MB or max_rx > THRESHOLD_MB:
-                    self.link_inactive_since[(sw1, sw2)] = current_time
-
-        # recalculate
+        # 如果需要重新计算路径
         if need_recalculate:
-            print("recalculate")
-            if self.check_src!=self.src_ip:
-                self.ip_counter=1
-            self.check_src=self.src_ip
-            temp_src_ip = "10.0.%d.%s" % (self.ip_counter,self.src_ip)
+            print("Recalculating paths due to traffic changes...")
+            if self.check_src != self.src_ip:
+                self.ip_counter = 1
+                self.check_src = self.src_ip
+            
+            temp_src_ip = "10.0.%d.%s" % (self.ip_counter, self.src_ip)
             temp_dst_ip = "10.0.0.%s" % (self.dst_ip)
-            self.find_max_bandwidth_path_recalculate(self.myswitches[host_switch[self.src_ip]], self.myswitches[host_switch[self.dst_ip]], temp_src_ip, temp_dst_ip)
-
- 
+            self.find_max_bandwidth_path_recalculate(
+                self.myswitches[host_switch[self.src_ip]], 
+                self.myswitches[host_switch[self.dst_ip]], 
+                temp_src_ip, temp_dst_ip)
